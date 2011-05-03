@@ -1,0 +1,15 @@
+This script will:
+
+- Set up Squid
+- Check if all files needed to set up Squid are available
+- Add the group squid
+- Add the user squid
+- Add the group squidadm
+- Patch Squid
+- Make and install Squid
+- Install script for rotation of logs
+- Install squid init script
+
+You must download a source archive file and extract ti to your desired directory. Then edit the line:
+
+$ SQUID_SRCVER="2.6.STABLE18"
