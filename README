@@ -10,6 +10,6 @@ This script will:
 - Install script for rotation of logs
 - Install squid init script
 
-You must download a source archive file and extract ti to your desired directory. Then edit the line:
+You must download a source archive file and extract it to your desired directory. Then edit the line:
 
 $ SQUID_SRCVER="2.6.STABLE18"
