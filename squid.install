@@ -1,0 +1,383 @@
+#!/bin/sh
+# Original script of Joran Kvalvaag jk@nerdworks.org
+#
+# Edited by Christian Foronda for this to work in CentOS
+# Date edited: January 9, 2008
+
+# Set up Squid
+# This script will:
+# -Check if all files needed to set up Squid are available
+# -Add the group squid
+# -Add the user squid
+# -Add the group squidadm
+# -Patch Squid
+# -Make and install Squid
+# -Install script for rotation of logs
+# -Install squid init script
+# -And some more. Read on.
+
+# Edit the squid version to be applicable
+SQUID_SRCVER="2.6.STABLE18"
+CWD=`pwd`
+
+if [ "$UID" -ne "0" ]; then
+	echo "  Only root should run this script!"
+	exit 1
+fi
+
+if [ ! -f "/etc/redhat-release" ]; then
+	echo "  WARNING! This script have only been tested on CentOS Linux"
+fi
+
+if ps ax | grep -v grep | grep ' squid ' > /dev/null; then
+	echo "  squid is currently running. Please stop squid."
+       	exit 1
+fi
+
+if getent group squid >/dev/null 2>&1 ; then
+	echo "  Group squid already exists."
+else
+	echo "  Adding group squid"
+	groupadd -g 23 squid
+fi
+
+if getent passwd squid >/dev/null 2>&1 ; then
+	echo "  User squid already exists."
+else
+	echo "  Adding user squid"
+	useradd -u 23 -g 23 -d /var/spool/squid -r -s /bin/false -c "Squid Proxy Server" squid
+fi
+
+if [ -d /etc/squid ]; then
+	cd /etc/squid || exit 1
+	for F in cachemgr.conf mib.txt mime.conf msntauth.conf squid.conf; do
+		if [ -f $F ]; then
+			mv $F{,.bak} || exit 1
+		fi
+	done
+	cd $CWD
+fi
+
+# Squid
+rm -rf squid-${SQUID_SRCVER}
+echo "  Unpacking Squid"
+tar jxf squid-${SQUID_SRCVER}.tar.bz2 || exit 1
+
+chown -R root:root squid-${SQUID_SRCVER} || exit 1
+
+cd squid-${SQUID_SRCVER} || exit 1
+
+chown -R root:root .
+find . -perm 666 -exec chmod 644 {} \;
+find . -perm 664 -exec chmod 644 {} \;
+find . -perm 777 -exec chmod 755 {} \;
+find . -perm 775 -exec chmod 755 {} \;
+
+
+echo "  Running ./configure with a whole lot of options..."
+./configure \
+  --prefix=/opt/squid \
+  --sysconfdir=/etc/squid \
+  --localstatedir=/var/log/squid \
+  --bindir=/bin \
+  --sbindir=/sbin \
+  --mandir=/usr/share/man \
+  --infodir=/usr/share/info \
+  --libexecdir=/usr/libexec \
+  --datadir=/usr/share/squid \
+  --enable-cache-digests \
+  --enable-poll \
+  --enable-ssl \
+  --enable-delay-pools \
+  --enable-linux-netfilter \
+  --enable-truncate \
+  --enable-removal-policies \
+  --disable-ident-lookups \
+  1> jk.conf.log || exit 1
+
+
+
+# Do not install auth-helper winbind when using Samba 3.x
+# It wont work. Samba 3.x provides ntlm_auth instead.
+#
+# If you want to enable the basic-auth-helper auth_ldap or the external-acl-helper ldap_group,
+# the ldap libraries must first be installed.
+# It also looks like getpwnam may be used instead.
+echo "  Running make"
+make 1> jk.make.log || exit 1
+
+echo "  Installing Squid"
+make install 1>/dev/null || exit 1
+
+mkdir -p /var/spool/squid
+
+# Fix Permissions
+chown squid:squid /var/spool/squid || exit 1
+chown squid:squid /var/log/squid || exit 1
+chown -R squid.squid /var/log/squid* || exit 1
+chmod -R 777 /var/log/squid* || exit 1
+chmod -R 750 /var/spool/squid* || exit 1
+chmod 2775 /etc/squid/* || exit 1
+chmod 640 /etc/squid/squid.conf || exit 1
+chown root:squid /etc/squid || exit 1
+chmod 640 /etc/squid/cachemgr.conf || exit 1
+chown root:squid /etc/squid/cachemgr.conf || exit 1
+strip /sbin/squid
+strip /bin/squidclient
+strip /usr/libexec/unlinkd
+strip /usr/libexec/cachemgr.cgi
+
+ln -snf /usr/share/squid/errors/English /etc/squid/errors || exit 1
+ln -snf /usr/share/squid/icons /etc/squid/icons || exit 1
+
+mkdir -p /usr/share/doc/squid-${SQUID_SRCVER} || exit 1
+cp doc/debug-sections.txt contrib/rredir.* contrib/url-normalizer.pl contrib/user-agents.pl contrib/squid.options contrib/squid.rc \
+README CONTRIBUTORS COPYING COPYRIGHT CREDITS INSTALL QUICKSTART RELEASENOTES.html SPONSORS scripts/*.pl \
+/usr/share/doc/squid-${SQUID_SRCVER}
+
+cd /etc/squid/ || exit 1
+for F in cachemgr.conf mib.txt mime.conf msntauth.conf squid.conf; do
+	if [ -f ${F}.bak ]; then
+		mv $F{,.new} || exit 1
+		mv $F{.bak,} || exit 1
+	fi
+done
+
+cd $CWD
+
+echo "  Installing script to control squid in /etc/rc.d/init.d/"
+
+INIT=/etc/rc.d/init.d/squid
+
+# Here containing the body of the generated script.
+(
+cat <<'EOF'
+#!/bin/bash
+#
+# chmod 700
+# chkconfig --add squid
+# chkconfig squid on
+#
+# This shell script takes care of starting and stopping
+# Squid Internet Object Cache
+#
+# chkconfig: - 90 25
+#
+# description: Squid - Internet Object Cache. Internet object caching is
+# a way to store requested Internet objects (i.e., data available
+# via the HTTP, FTP, and gopher protocols) on a system closer to the
+# requesting site than to the source. Web browsers can then use the
+# local Squid cache as a proxy HTTP server, reducing access time as
+# well as bandwidth consumption.
+#
+# pidfile: /var/run/squid.pid
+# config: /etc/squid/squid.conf
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ ${NETWORKING} = "no" ] && exit 0
+
+# check if the squid conf file is present
+[ -f /etc/squid/squid.conf ] || exit 0
+
+if [ -f /etc/sysconfig/squid ]; then
+  . /etc/sysconfig/squid
+fi
+
+# don't raise an error if the config file is incomplete
+# set defaults instead:
+SQUID_OPTS=${SQUID_OPTS:-"-D"}
+SQUID_PIDFILE_TIMEOUT=${SQUID_PIDFILE_TIMEOUT:-20}
+SQUID_SHUTDOWN_TIMEOUT=${SQUID_SHUTDOWN_TIMEOUT:-100}
+
+# determine the name of the squid binary
+[ -f /sbin/squid ] && SQUID=squid
+[ -z "$SQUID" ] && exit 0
+
+prog="$SQUID"
+
+# determine which one is the cache_swap directory\
+CACHE_SWAP=`sed -e 's/#.*//g' /etc/squid/squid.conf |
+        grep cache_dir |  awk '{ print $3}'`
+[ -z "$CACHE_SWAP" ] && CACHE_SWAP=/var/spool/squid
+
+RETVAL=0
+
+start() {
+    for adir in $CACHE_SWAP; do
+        if [ ! -d $adir/00 ]; then
+             $SQUID -z -F -D >> /var/log/squid/squid.out 2>&1
+        fi
+    done
+    echo -n $"Starting $prog: "
+    $SQUID $SQUID_OPTS >> /var/log/squid/squid.out 2>&1
+    RETVAL=$?
+    [ $RETVAL -eq 0 ] && touch /var/lock/subsys/$SQUID
+    [ $RETVAL -eq 0 ] && echo_success
+    [ $RETVAL -ne 0 ] && echo_failure
+    echo
+    return $RETVAL
+}
+
+stop() {
+    echo -n  $"Stopping $prog: "
+    $SQUID -k check >> /var/log/squid/squid.out 2>&1
+    RETVAL=$?
+    if [ $RETVAL -eq 0 ] ; then
+        $SQUID -k shutdown &
+        rm -f /var/lock/subsys/$SQUID
+        timeout=0
+        while : ; do
+                [ -f /var/run/squid.pid ] || break
+                if [ $timeout -ge $SQUID_SHUTDOWN_TIMEOUT ]; then
+                    echo
+                    return 1
+                fi
+                sleep 2 && echo -n "."
+                timeout=$((timeout+2))
+        done
+        echo_success
+        echo
+    else
+        echo_failure
+        echo
+    fi
+    return $RETVAL
+}
+
+reload() {
+    $SQUID $SQUID_OPTS -k reconfigure
+}
+
+restart() {
+    stop
+    start
+}
+
+condrestart() {
+    [ -e /var/lock/subsys/squid ] && restart || :
+}
+
+rhstatus() {
+    status $SQUID
+    $SQUID -k check
+}
+
+probe() {
+    return 0
+}
+
+case "$1" in
+start)
+    start
+    ;;
+
+stop)
+    stop
+    ;;
+
+reload)
+    reload
+    ;;
+
+restart)
+    restart
+    ;;
+
+condrestart)
+    condrestart
+    ;;
+
+status)
+    rhstatus
+    ;;
+
+probe)
+    exit 0
+    ;;
+
+*)
+    echo $"Usage: $0 {start|stop|status|reload|restart|condrestart}"
+    exit 1
+esac
+
+exit
+EOF
+) > $INIT
+
+if [ -f "$INIT" ]
+then
+  chmod 755 $INIT
+  # Make the generated file executable.
+else
+  echo "Problem in creating file: \"$INIT\""
+fi
+
+echo "  Installing log rotation script for squid logfiles"
+LOGROTATE=/etc/logrotate.d/squid
+
+# Here containing the body of the generated script.
+(
+cat <<'EOF'
+/var/log/squid/access.log {
+	weekly
+	rotate 5
+	copytruncate
+	compress
+	notifempty
+	missingok
+}
+
+/var/log/squid/cache.log {
+	weekly
+	rotate 5
+	copytruncate
+	compress
+	notifempty
+	missingok
+}
+
+/var/log/squid/store.log {
+	weekly
+	rotate 5
+	copytruncate
+	compress
+	notifempty
+	missingok
+
+# This script asks squid to rotate its logs on its own.
+# Restarting squid is a long process and it is not worth
+# doing it just to rotate logs
+
+postrotate
+	/usr/sbin/squid -k rotate
+	endscript
+}
+EOF
+) > $LOGROTATE
+
+if [ -f "$LOGROTATE" ]
+then
+  chmod 644 $LOGROTATE
+  # Make the generated file executable.
+else
+  echo "Problem in creating file: \"$LOGROTATE\""
+fi
+
+
+echo "  Initzialising cache, look for errors here."
+echo ""
+squid -z || exit 1
+echo ""
+echo "  Done! Now try /etc/init.d/squid start, and see what happen."
+
+exit 0
+# End
